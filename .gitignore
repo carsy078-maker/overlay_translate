@@ -1,0 +1,8 @@
+# 진단 스크립트가 뽑아내는 UIA 트리 덤프.
+# 실제 디스코드 화면의 서버명/유저명/메시지 본문이 그대로 들어가므로 커밋 금지.
+discord_tree_dump.txt
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
