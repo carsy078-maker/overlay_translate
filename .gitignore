@@ -11,6 +11,7 @@ venv/
 build/
 dist/
 *.spec
+*.exe
 
 # 앱이 남기는 실행 로그
 translator.log

@@ -58,22 +58,27 @@ def _app_dir() -> str:
 
 
 _LOG_PATH = os.path.join(_app_dir(), "translator.log")
+_LOG_LOCK = threading.Lock()
 
 
 def _log(*args):
     """콘솔 없는 --windowed exe는 sys.stdout이 None이라 print가 터진다.
     그래서 콘솔 출력은 안전하게 감싸고, 항상 로그 파일에도 남긴다.
-    (windowed exe에서 무슨 일이 일어나는지 볼 수 있는 유일한 창구)"""
+    (windowed exe에서 무슨 일이 일어나는지 볼 수 있는 유일한 창구)
+
+    스캐너/번역워커 등 여러 스레드가 동시에 부른다. 락 없이 같은 파일을 동시에
+    열면 Windows 파일 공유 위반으로 줄이 유실되므로 락으로 직렬화한다."""
     msg = " ".join(str(a) for a in args)
     try:
         print(msg)
     except Exception:
         pass
-    try:
-        with open(_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
-    except Exception:
-        pass
+    with _LOG_LOCK:
+        try:
+            with open(_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
 
 # ── 설정 ──────────────────────────────────────────────
 DISCORD_TITLE_RE = ".*Discord.*"
@@ -450,17 +455,26 @@ class Scanner(QObject):
             # 스레드에서 예외가 터지면 조용히 죽어서 '대기 중'에 멈춘다. 반드시 남긴다.
             _log("[scanner] 스레드 예외로 중단:\n" + traceback.format_exc())
 
+    def _log_state(self, state: str):
+        # 상태가 바뀔 때만 로그 (매 0.35초 도배 방지, 어디서 막혔는지 추적용)
+        if state != self._last_state:
+            self._last_state = state
+            _log(f"[scanner] 상태: {state}")
+
     def _run_loop(self):
+        self._last_state = ""
         _log("[scanner] 시작. 디스코드 창을 찾는 중...")
         while self._running:
             discord_win = find_discord_window()
             if discord_win is None or not discord_win.is_visible():
+                self._log_state("디스코드 창 못 찾음")
                 self.statusReady.emit(False, 0, 0)
                 time.sleep(SCAN_INTERVAL_SEC)
                 continue
 
             win_rect = _rect_tuple(discord_win)
             if win_rect is None:
+                self._log_state("디스코드 창 좌표 못 읽음")
                 self.statusReady.emit(False, 0, 0)
                 time.sleep(SCAN_INTERVAL_SEC)
                 continue
@@ -468,10 +482,11 @@ class Scanner(QObject):
 
             msg_list = self._get_message_list(discord_win)
             if msg_list is None:
-                # 접근성 트리가 비었을 가능성 (내레이터 켜기 안내)
+                self._log_state("메시지 목록 못 찾음 (내레이터 필요할 수 있음)")
                 self.statusReady.emit(True, 0, 0)
                 time.sleep(SCAN_INTERVAL_SEC)
                 continue
+            self._log_state("정상 스캔 중")
 
             t0 = time.perf_counter()
             try:
