@@ -27,10 +27,12 @@ v1 대비 바뀐 핵심(실측 기반):
 """
 
 import ctypes
+import os
 import re
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from queue import Queue, Empty
 from typing import Optional
@@ -48,11 +50,28 @@ from PyQt6.QtWidgets import (
 from pywinauto import Desktop
 
 
+def _app_dir() -> str:
+    """실행 파일(또는 스크립트)이 있는 폴더. 로그를 여기에 남긴다."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+_LOG_PATH = os.path.join(_app_dir(), "translator.log")
+
+
 def _log(*args):
-    """exe(콘솔 없는 --windowed)로 빌드하면 sys.stdout이 None이라 print가 터진다.
-    안전하게 감싼다. 콘솔이 있으면 그대로 찍히고, 없으면 조용히 무시한다."""
+    """콘솔 없는 --windowed exe는 sys.stdout이 None이라 print가 터진다.
+    그래서 콘솔 출력은 안전하게 감싸고, 항상 로그 파일에도 남긴다.
+    (windowed exe에서 무슨 일이 일어나는지 볼 수 있는 유일한 창구)"""
+    msg = " ".join(str(a) for a in args)
     try:
-        print(*args)
+        print(msg)
+    except Exception:
+        pass
+    try:
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
     except Exception:
         pass
 
@@ -244,13 +263,46 @@ def _is_visible_rect(rect, win_rect) -> bool:
     return not (r < wl or l > wr or b < wt or t > wb)
 
 
+_find_win_logged = False
+# Discord 본체 창의 클래스. 우리 조작 창(Qt)이나 Discord 숨은 보조 창을 걸러낸다.
+_DISCORD_WIN_CLASS = "Chrome_WidgetWin_1"
+
+
 def find_discord_window():
+    """제목에 Discord가 든 창이 여러 개(우리 창 포함, Discord 보조 창 포함)여도
+    진짜 본체 하나를 고른다. 단일 매칭을 가정하면 ElementAmbiguousError로 죽는다."""
+    global _find_win_logged
     try:
-        return Desktop(backend="uia").window(
-            title_re=DISCORD_TITLE_RE
-        ).wrapper_object()
+        wins = Desktop(backend="uia").windows(
+            title_re=DISCORD_TITLE_RE, top_level_only=True
+        )
     except Exception:
+        if not _find_win_logged:      # 첫 실패만 남긴다 (0.35초마다 도배 방지)
+            _find_win_logged = True
+            _log("[find] Discord 창 탐색 실패:\n" + traceback.format_exc())
         return None
+
+    candidates = []
+    for w in wins:
+        try:
+            if not w.is_visible():
+                continue
+            cls = w.element_info.class_name or ""
+            r = w.rectangle()
+            area = (r.right - r.left) * (r.bottom - r.top)
+            if area <= 0:
+                continue
+            candidates.append((cls, area, w))
+        except Exception:
+            continue
+
+    # Discord 본체(Chrome_WidgetWin_1) 우선, 그중 가장 큰 창.
+    chrome = [c for c in candidates if c[0] == _DISCORD_WIN_CLASS]
+    pool = chrome or candidates
+    if not pool:
+        return None
+    pool.sort(key=lambda c: c[1], reverse=True)
+    return pool[0][2]
 
 
 def _has_message_items(lst) -> bool:
@@ -392,6 +444,13 @@ class Scanner(QObject):
         return lst
 
     def run(self):
+        try:
+            self._run_loop()
+        except Exception:
+            # 스레드에서 예외가 터지면 조용히 죽어서 '대기 중'에 멈춘다. 반드시 남긴다.
+            _log("[scanner] 스레드 예외로 중단:\n" + traceback.format_exc())
+
+    def _run_loop(self):
         _log("[scanner] 시작. 디스코드 창을 찾는 중...")
         while self._running:
             discord_win = find_discord_window()
@@ -537,7 +596,8 @@ class ControlWindow(QWidget):
     def __init__(self, overlay: OverlayWindow):
         super().__init__()
         self.overlay = overlay
-        self.setWindowTitle("Discord 번역기")
+        # 제목에 'Discord'를 넣으면 find_discord_window의 검색에 우리 창이 걸려 충돌한다.
+        self.setWindowTitle("실시간 오버레이 번역기")
         self.setFixedWidth(300)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 
