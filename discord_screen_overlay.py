@@ -37,8 +37,25 @@ from typing import Optional
 
 import requests
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QLabel, QWidget
+from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QMenu,
+    QStyle,
+    QSystemTrayIcon,
+    QWidget,
+)
 from pywinauto import Desktop
+
+
+def _log(*args):
+    """exe(콘솔 없는 --windowed)로 빌드하면 sys.stdout이 None이라 print가 터진다.
+    안전하게 감싼다. 콘솔이 있으면 그대로 찍히고, 없으면 조용히 무시한다."""
+    try:
+        print(*args)
+    except Exception:
+        pass
 
 # ── 설정 ──────────────────────────────────────────────
 DISCORD_TITLE_RE = ".*Discord.*"
@@ -190,7 +207,7 @@ class TranslationManager:
                     time.sleep(TRANSLATE_RETRY_DELAY * (attempt + 1))  # 점증 backoff
                     self._queue.put((text, attempt + 1))
                     continue                       # _pending 유지 → 중복 큐잉 방지
-                print(f"[translate] 포기(재시도 {attempt}회 실패): {text[:40]!r}")
+                _log(f"[translate] 포기(재시도 {attempt}회 실패): {text[:40]!r}")
                 result = None
 
             with self._lock:
@@ -375,7 +392,7 @@ class Scanner(QObject):
         return lst
 
     def run(self):
-        print("[scanner] 시작. 디스코드 창을 찾는 중...")
+        _log("[scanner] 시작. 디스코드 창을 찾는 중...")
         while self._running:
             discord_win = find_discord_window()
             if discord_win is None or not discord_win.is_visible():
@@ -426,7 +443,7 @@ class Scanner(QObject):
                         )
 
             dt = (time.perf_counter() - t0) * 1000
-            print(f"[scanner] 보이는 메시지 {scanned}개, 번역표시 {len(results)}개, "
+            _log(f"[scanner] 보이는 메시지 {scanned}개, 번역표시 {len(results)}개, "
                   f"스캔 {dt:.0f}ms")
             self.blocksReady.emit(results)
             time.sleep(SCAN_INTERVAL_SEC)
@@ -510,8 +527,50 @@ class OverlayWindow(QWidget):
                 lbl.deleteLater()
 
 
+def _make_tray(app: QApplication, overlay: OverlayWindow) -> QSystemTrayIcon:
+    """우하단 시스템 트레이 아이콘. exe로 쓸 때 유일한 조작/종료 수단이다."""
+    icon = app.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+    tray = QSystemTrayIcon(icon, app)
+    tray.setToolTip("Discord 오버레이 번역기")
+
+    menu = QMenu()
+
+    toggle = QAction("번역 숨기기", app, checkable=True)
+
+    def on_toggle(checked):
+        overlay.setVisible(not checked)
+        toggle.setText("번역 보이기" if checked else "번역 숨기기")
+
+    toggle.triggered.connect(on_toggle)
+    menu.addAction(toggle)
+
+    menu.addSeparator()
+    quit_action = QAction("종료", app)
+    quit_action.triggered.connect(app.quit)
+    menu.addAction(quit_action)
+
+    tray.setContextMenu(menu)
+    # 아이콘을 클릭(좌클릭)해도 메뉴가 뜨도록
+    tray.activated.connect(
+        lambda reason: menu.popup(tray.geometry().center())
+        if reason == QSystemTrayIcon.ActivationReason.Trigger
+        else None
+    )
+    tray.show()
+    tray.showMessage(
+        "Discord 오버레이 번역기",
+        "실행되었습니다. 종료하려면 트레이 아이콘을 우클릭하세요.",
+        icon,
+        3000,
+    )
+    return tray
+
+
 def main():
     app = QApplication(sys.argv)
+    # 오버레이는 투명한 도구 창이라 '마지막 창'으로 잡혀 앱이 꺼질 수 있다. 트레이로만 종료.
+    app.setQuitOnLastWindowClosed(False)
+
     overlay = OverlayWindow()
     overlay.show()
 
@@ -523,11 +582,13 @@ def main():
     thread = threading.Thread(target=scanner.run, daemon=True)
     thread.start()
 
-    print("=" * 60)
-    print("오버레이 번역기 실행 중. 디스코드 창 위에 번역 박스가 뜹니다.")
-    print("아무 메시지도 안 잡히면 Win+Ctrl+Enter 로 내레이터를 켜세요.")
-    print("종료: 이 콘솔에서 Ctrl+C")
-    print("=" * 60)
+    tray = _make_tray(app, overlay)   # noqa: F841  (GC 방지로 참조 유지)
+
+    _log("=" * 60)
+    _log("오버레이 번역기 실행 중. 디스코드 창 위에 번역 박스가 뜹니다.")
+    _log("아무 메시지도 안 잡히면 Win+Ctrl+Enter 로 내레이터를 켜세요.")
+    _log("종료: 트레이 아이콘 우클릭 > 종료")
+    _log("=" * 60)
 
     sys.exit(app.exec())
 

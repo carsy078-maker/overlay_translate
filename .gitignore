@@ -6,3 +6,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# PyInstaller 빌드 산출물 (exe는 각자 build.bat로 생성)
+build/
+dist/
+*.spec
