@@ -22,13 +22,38 @@ TS_PATTERNS = [
     re.compile(r"^\d+\s*(초|분|시간|일|주|개월|달|년)\s*전$"),  # 3달 전
     re.compile(r"^(어제|오늘)"),
 ]
+# 어떤 디스코드 버전은 [유저명][태그][시간]을 한 덩어리 Text로 렌더한다.
+# ("Adjudicator (EN/SP) 서버 태그: DF 오후 6:08") → 시간으로 끝나면 헤더로 본다.
+HEADER_END_TIME = re.compile(r"(오전|오후)\s*\d{1,2}:\d{2}\s*$")
+
 EDITED = {"수정됨", "(edited)", "edited"}
+
+# 메시지 본문에 섞여 들어오는 리액션 버튼 라벨(같은 Text 안에 붙어 나온다).
+# "I coach pro teams클릭해서 반응클릭해서 반응..." 처럼 본문 끝에 반복해 달라붙는다.
+# 라벨 바로 앞뒤 공백까지 함께 지운다(단어끼리 붙는 것 방지). 단, 조각 내부의
+# 정상 공백은 건드리지 않으므로 조각 이어붙이기(공백 보존)에는 영향이 없다.
+# "React" 단독은 일반 단어(프레임워크 등) 오탐 위험이라 넣지 않는다.
+REACTION_NOISE = re.compile(r"\s*(클릭해서\s*반응|Click to react)+\s*", re.IGNORECASE)
+
+
+def strip_ui_noise(text: str) -> str:
+    """본문 Text에 섞인 리액션 버튼 라벨을 제거한다(조각 내부 공백은 보존)."""
+    return REACTION_NOISE.sub("", text)
+
+# 메시지 위에 뜨는 액션 툴바 버튼 라벨(리액션 달린 메시지에서 본문에 딸려 들어온다).
+# 한국어 UI + 영어 UI 둘 다.
+UI_ACTIONS = {
+    "추가하기", "반응 추가하기", "답장", "전달", "전달하기", "기타", "더 보기", "더보기",
+    "Add Reaction", "React", "Reply", "Forward", "More", "More Actions",
+}
+# 리액션 이모지 접근성 이름(":poop::thumbsup::heart:" 처럼 콜론으로 감싼 코드들).
+EMOJI_SHORTCODE = re.compile(r"^(:[^:\s]+:)+$")
 
 
 def classify_run(text: str) -> str:
     """메시지 안의 Text 조각 하나를 분류한다.
 
-    반환: empty / edited / count / timestamp / punct / content
+    반환: empty / edited / count / timestamp / ui / punct / content
     (content 만 번역 대상 본문으로 취급한다)
     """
     s = text.strip()
@@ -36,11 +61,17 @@ def classify_run(text: str) -> str:
         return "empty"
     if s in EDITED:
         return "edited"
+    if s in UI_ACTIONS:                    # 액션 툴바 버튼(추가하기/답장/전달/기타 …)
+        return "ui"
     if s.isdigit():                       # 반응 개수 등
         return "count"
+    if EMOJI_SHORTCODE.match(s):           # :poop::thumbsup: 같은 리액션 코드
+        return "punct"
     for p in TS_PATTERNS:
         if p.match(s):
             return "timestamp"
+    if HEADER_END_TIME.search(s):          # [유저명 … 오후 6:08] 한 덩어리 헤더
+        return "timestamp"
     if not any(ch.isalnum() for ch in s):  # 문장부호/이모지만 → 무의미
         return "punct"
     return "content"
@@ -82,9 +113,12 @@ def select_body_runs(runs):
         if kind == "timestamp":
             seen_ts = True
             continue
-        if kind in ("empty", "edited", "count", "punct"):
+        if kind in ("empty", "edited", "count", "punct", "ui"):
             continue
-        (post if seen_ts else pre).append((text, rect))
+        cleaned = strip_ui_noise(text)     # 본문에 붙은 '클릭해서 반응' 등 제거
+        if not cleaned:
+            continue
+        (post if seen_ts else pre).append((cleaned, rect))
     return post if seen_ts else pre
 
 

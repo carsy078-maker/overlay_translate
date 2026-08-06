@@ -478,16 +478,28 @@ class OverlayWindow(QWidget):
         x, y = l - ox, t - oy
         ow, oh = max(r - l, 1), max(b - t, 1)
 
+        # 오른쪽으로 늘어나도 화면(오버레이 창) 밖으로는 못 나가게 하는 최대 폭.
+        # 너무 넓으면 읽기 나쁘므로 편안한 줄폭(600px)과 창 안쪽 중 작은 값으로 캡.
+        cap = min(self.width() - x - 8, 600)
+        max_w = max(ow, cap)
+
         if oh <= SINGLE_LINE_MAX_H:
-            # 원문이 한 줄 → 줄바꿈 없이 오른쪽으로 늘린다 (줄바꿈 깨짐 방지)
+            # 원문이 한 줄. 번역이 짧으면 한 줄로 가로 확장, 길면 줄바꿈해 아래로.
             lbl.setWordWrap(False)
-            hint = lbl.sizeHint()
-            w = max(ow, hint.width())
-            h = max(oh, hint.height())
+            hint_w = lbl.sizeHint().width()
+            if hint_w <= max_w:
+                lbl.setWordWrap(False)
+                w = max(ow, hint_w)
+                h = max(oh, lbl.sizeHint().height())
+            else:
+                # 한 줄로는 화면 밖까지 넘침 → 최대 폭으로 줄바꿈, 아래로 확장
+                lbl.setWordWrap(True)
+                w = max_w
+                h = max(oh, lbl.heightForWidth(w))
         else:
-            # 원문이 여러 줄인 문단 → 같은 폭으로 줄바꿈하고 아래로만 늘린다
+            # 원문이 여러 줄인 문단 → 폭을 유지(단, 화면 밖 방지)하고 아래로 확장
             lbl.setWordWrap(True)
-            w = ow
+            w = min(ow, max_w)
             h = max(oh, lbl.heightForWidth(w))
 
         lbl.setGeometry(x, y, w, h)

@@ -8,6 +8,7 @@ from text_filter import (
     is_visible_rect,
     looks_like_korean,
     select_body_runs,
+    strip_ui_noise,
 )
 
 
@@ -30,9 +31,58 @@ from text_filter import (
     ("2026년 4월 14일 화요일 오전 5:33", "timestamp"),
     ("3달 전", "timestamp"),
     ("12:34", "timestamp"),
+    ("추가하기", "ui"),              # 액션 툴바 버튼
+    ("답장", "ui"),
+    ("전달", "ui"),
+    ("기타", "ui"),
+    ("Reply", "ui"),
+    (":poop:", "punct"),            # 리액션 이모지 코드
+    (":poop::thumbsup::heart:", "punct"),
 ])
 def test_classify_run(text, expected):
     assert classify_run(text) == expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Adjudicator (EN/SP) 서버 태그: DF 오후 6:08", "timestamp"),  # 한 덩어리 헤더
+    ("Look-Ass 서버 태그: VS 오후 6:21", "timestamp"),
+    ("Navael 오후 8:19", "timestamp"),
+])
+def test_classify_merged_header(text, expected):
+    assert classify_run(text) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("I coach pro teams클릭해서 반응클릭해서 반응클릭해서 반응", "I coach pro teams"),
+    ("you can dm also if you want클릭해서 반응", "you can dm also if you want"),
+    ("hello Click to reactClick to react", "hello"),
+    ("no noise here", "no noise here"),
+])
+def test_strip_ui_noise(raw, expected):
+    assert strip_ui_noise(raw) == expected
+
+
+def test_body_drops_merged_header_and_reaction_noise():
+    # 이 버전 디스코드의 실제 구조: 헤더 한 덩어리 + 본문에 리액션 라벨 붙음
+    runs = [
+        ("Adjudicator (EN/SP) 서버 태그: DF 오후 6:10", (0, 0, 300, 22)),  # 헤더(유저명+시간)
+        ("All good, its my job클릭해서 반응클릭해서 반응", (0, 24, 250, 46)),
+    ]
+    assert _texts(select_body_runs(runs)) == ["All good, its my job"]
+
+
+def test_body_drops_ui_and_reactions():
+    # 리액션 달린 메시지: 본문 뒤에 액션버튼/이모지코드가 붙어도 본문만 남아야 한다.
+    runs = [
+        ("오전 6:10", (0, 0, 50, 18)),
+        ("All good, its my job", (0, 20, 200, 38)),
+        ("추가하기", (0, 40, 40, 58)),
+        ("답장", (45, 40, 70, 58)),
+        ("전달", (75, 40, 100, 58)),
+        ("기타", (105, 40, 130, 58)),
+        (":poop::thumbsup::heart:", (135, 40, 260, 58)),
+    ]
+    assert _texts(select_body_runs(runs)) == ["All good, its my job"]
 
 
 def test_classify_username_is_content():
