@@ -89,8 +89,8 @@ MESSAGE_AUTOMATION_PREFIX = "chat-messages-"
 
 TARGET_LANG = CONFIG.target_lang
 PROVIDER = CONFIG.translation_provider
-PAPAGO_ID = CONFIG.papago_client_id
-PAPAGO_SECRET = CONFIG.papago_client_secret
+GEMINI_API_KEY = CONFIG.gemini_api_key
+GEMINI_MODEL = CONFIG.gemini_model
 SCAN_INTERVAL_SEC = CONFIG.scan_interval_sec
 MIN_TEXT_LEN = CONFIG.min_text_len
 MAX_TEXT_LEN = CONFIG.max_text_len
@@ -151,62 +151,57 @@ def _google_free_translate(text: str, session=None):
         return _FAILED          # 응답 형식이 깨짐 → 역시 재시도
 
 
-# ── Papago (네이버 클라우드 플랫폼) ─────────────────────
-# 구글 무료보다 한국어 구어체가 자연스럽다. NCP 콘솔에서 키 2개를 발급해야 한다.
-_PAPAGO_DETECT_URL = "https://naveropenapi.apigw.ntruss.com/langs/v1/dect"
-_PAPAGO_TRANS_URL = "https://naveropenapi.apigw.ntruss.com/nmt/v1/translation"
+# ── Gemini (Google AI Studio, LLM) ─────────────────────
+# 구글 기계번역보다 자연스럽다(슬랭·구어체·문맥 반영). 무료 키는 카드 없이 발급.
+_GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
+               "{model}:generateContent")
+_GEMINI_PROMPT = (
+    "다음은 디스코드 채팅 메시지야. 자연스러운 한국어 구어체로 번역해줘. "
+    "게임 용어·슬랭·줄임말은 맥락에 맞게 자연스럽게 옮기고, 설명이나 따옴표 없이 "
+    "번역문만 한 줄로 출력해. 이미 한국어면 그대로 출력해.\n\n메시지: {text}"
+)
 
 
-def _papago_headers():
-    return {
-        "X-NCP-APIGW-API-KEY-ID": PAPAGO_ID,
-        "X-NCP-APIGW-API-KEY": PAPAGO_SECRET,
-    }
-
-
-def _papago_translate(text: str, session=None):
-    """NCP Papago. 반환: 번역문 / None(목표어와 같음·감지불가) / _FAILED(재시도).
-
-    Papago 번역 API는 source를 자동 감지하지 않으므로, 언어 감지(dect)를 먼저
-    호출해 원문 언어를 알아낸 뒤 번역한다.
-    """
+def _gemini_translate(text: str, session=None):
+    """Gemini(LLM)로 자연스럽게 번역. 반환: 번역문 / None / _FAILED(재시도)."""
     http = session or requests
     try:
-        d = http.post(_PAPAGO_DETECT_URL, headers=_papago_headers(),
-                      data={"query": text}, timeout=5)
-        d.raise_for_status()
-        src = (d.json() or {}).get("langCode")
+        res = http.post(
+            _GEMINI_URL.format(model=GEMINI_MODEL),
+            params={"key": GEMINI_API_KEY},
+            json={
+                "contents": [{"parts": [{"text": _GEMINI_PROMPT.format(text=text)}]}],
+                "generationConfig": {"temperature": 0.3},
+            },
+            timeout=10,
+        )
+        res.raise_for_status()
+        data = res.json()
     except Exception:
         return _FAILED
-    if not src or src in ("unk", TARGET_LANG):
-        return None                       # 감지 불가 또는 이미 목표 언어
     try:
-        r = http.post(_PAPAGO_TRANS_URL, headers=_papago_headers(),
-                      data={"source": src, "target": TARGET_LANG, "text": text},
-                      timeout=5)
-        r.raise_for_status()
-        translated = r.json()["message"]["result"]["translatedText"].strip()
-        if not translated or translated == text.strip():
+        out = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        if not out or out == text.strip():
             return None
-        return translated
+        return out
     except Exception:
         return _FAILED
 
 
 # ── 프로바이더 디스패처 ─────────────────────────────────
-_PAPAGO_WARNED = False
+_GEMINI_WARNED = False
 
 
 def _translate(text: str, session=None):
     """설정된 프로바이더로 번역. 키가 없으면 구글 무료로 폴백."""
-    global _PAPAGO_WARNED
-    if PROVIDER == "papago":
-        if PAPAGO_ID and PAPAGO_SECRET:
-            return _papago_translate(text, session)
-        if not _PAPAGO_WARNED:
-            _PAPAGO_WARNED = True
-            _log("[translate] provider=papago 인데 키가 없음 → 구글 무료로 폴백. "
-                 "translator.ini 의 papago_client_id/secret 을 채우세요.")
+    global _GEMINI_WARNED
+    if PROVIDER == "gemini":
+        if GEMINI_API_KEY:
+            return _gemini_translate(text, session)
+        if not _GEMINI_WARNED:
+            _GEMINI_WARNED = True
+            _log("[translate] provider=gemini 인데 키가 없음 → 구글 무료로 폴백. "
+                 "translator.ini 의 gemini_api_key 를 채우세요.")
     return _google_free_translate(text, session)
 
 

@@ -31,9 +31,9 @@ def app_dir() -> str:
 class Config:
     # 번역
     target_lang: str = "ko"           # 목표 언어 (ISO 코드: ko, en, ja ...)
-    translation_provider: str = "google"  # google | papago
-    papago_client_id: str = ""        # NCP Papago X-NCP-APIGW-API-KEY-ID
-    papago_client_secret: str = ""    # NCP Papago X-NCP-APIGW-API-KEY
+    translation_provider: str = "google"  # google | gemini
+    gemini_api_key: str = ""          # Google AI Studio 무료 키(카드 불필요)
+    gemini_model: str = "gemini-2.0-flash"  # 무료 티어 모델
     translate_workers: int = 4        # 동시 번역 워커 수 (많을수록 빠르나 레이트리밋↑)
     translate_max_retries: int = 3    # 번역 실패 시 재시도 횟수
     translate_retry_delay: float = 0.7  # 재시도 간격(초), 점증
