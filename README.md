@@ -1,11 +1,16 @@
 # Discord 화면 오버레이 번역기 (Windows 전용)
 
+![tests](https://github.com/carsy078-maker/overlay_translate/actions/workflows/tests.yml/badge.svg)
+
 디스코드 클라이언트를 전혀 건드리지 않고, 화면 위에 별도의 투명 창을 띄워서
 외국어 메시지 위에 번역문을 덮어씌운다. Windows UI Automation(스크린 리더가 쓰는
 것과 같은 표준 접근성 API)으로 디스코드 창의 실제 텍스트와 화면 좌표를 읽어온다.
 
 Vencord 같은 DOM 주입 방식과 달리 디스코드 프로세스를 건드리지 않는다. 화면
 좌표를 OS 표준 API로 직접 읽어서, 그 좌표에 불투명 라벨을 그리는 방식이다.
+
+- **아키텍처**: [docs/architecture.md](docs/architecture.md) (스레드 구성 다이어그램)
+- **실측 근거**: [results/scan_benchmark.md](results/scan_benchmark.md)
 
 ## 실행 방법
 
@@ -40,12 +45,45 @@ python discord_screen_overlay.py
 
 ## 구조
 
-- `discord_screen_overlay.py` — 본체 (스캔 → 번역 → 오버레이)
-- `inspect_discord_tree.py` — 진단 & 벤치마크. 실제 디스코드의 UIA 트리를 재서
-  스캔 방식별 속도/요소 개수/메시지 구조를 측정하고, 정제된 결과를
-  `results/scan_benchmark.md`로 생성한다. 필터가 안 맞을 때 여기서 시작한다.
+- `discord_screen_overlay.py` — 본체 (UIA 스캔 → 번역 워커풀 → Qt 오버레이/조작창)
+- `text_filter.py` — 본문 판별·줄 묶기 등 **순수 로직** (의존성 없음, 테스트 대상)
+- `config.py` — 설정 로딩 (`translator.ini` / 환경변수 / 기본값)
+- `inspect_discord_tree.py` — 진단 & 벤치마크. UIA 트리를 재서 스캔 방식별 속도/
+  요소 개수/메시지 구조를 측정하고 `results/scan_benchmark.md`를 생성한다.
 - `results/scan_benchmark.md` — 위 스크립트가 만든 **실측 결과**(커밋됨).
-  아래 설계 근거의 수치가 여기서 검증된다.
+- `tests/` — 순수 로직 단위 테스트 (`pytest`). 상세는 [설정·개발](#설정) 참고.
+
+스레드 구성과 데이터 흐름은 [docs/architecture.md](docs/architecture.md) 참고.
+
+## 설정
+
+실행 옵션은 코드가 아니라 exe 옆의 `translator.ini`로 바꾼다(없으면 기본값).
+일회성 변경은 환경변수가 편하다. 우선순위는 **환경변수 > ini > 기본값**.
+
+```ini
+[translator]
+target_lang = ko          ; 목표 언어 (en, ja, zh-CN ...)
+translate_workers = 4     ; 동시 번역 워커 수
+scan_interval_sec = 0.35  ; 화면 스캔 주기
+font_size = 13            ; 번역 박스 글자 크기
+```
+
+```bash
+# 일회성으로 영어 번역
+DTL_TARGET_LANG=en python discord_screen_overlay.py
+```
+
+### 개발 / 테스트
+
+핵심 로직(`text_filter`, `config`)은 PyQt6/pywinauto 없이 테스트된다.
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+`text_filter`/`config`는 UIA·Qt 의존성이 없어 리눅스 CI에서도 그대로 돈다
+(push마다 GitHub Actions로 실행).
 
 ## 실측으로 알아낸 것들 (설계의 근거)
 

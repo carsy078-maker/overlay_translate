@@ -28,7 +28,6 @@ v1 대비 바뀐 핵심(실측 기반):
 
 import ctypes
 import os
-import re
 import sys
 import threading
 import time
@@ -49,15 +48,15 @@ from PyQt6.QtWidgets import (
 )
 from pywinauto import Desktop
 
+from config import app_dir, load_config
+from text_filter import (
+    classify_run as _classify_run,
+    group_runs_into_lines as _group_runs_into_lines,
+    is_visible_rect as _is_visible_rect,
+    looks_like_korean as _looks_like_korean,
+)
 
-def _app_dir() -> str:
-    """실행 파일(또는 스크립트)이 있는 폴더. 로그를 여기에 남긴다."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-_LOG_PATH = os.path.join(_app_dir(), "translator.log")
+_LOG_PATH = os.path.join(app_dir(), "translator.log")
 _LOG_LOCK = threading.Lock()
 
 
@@ -81,21 +80,21 @@ def _log(*args):
             pass
 
 # ── 설정 ──────────────────────────────────────────────
+# 값은 translator.ini / 환경변수(DTL_*) / 기본값 순으로 결정된다 (config.py 참고).
+CONFIG = load_config()
+
 DISCORD_TITLE_RE = ".*Discord.*"
-TARGET_LANG = "ko"
-SCAN_INTERVAL_SEC = 0.35
-MIN_TEXT_LEN = 2
-MAX_TEXT_LEN = 2000
 MESSAGE_AUTOMATION_PREFIX = "chat-messages-"
 
-# 한 화면에 번역할 줄이 10개 넘게 나오므로 워커를 여러 개 두고 동시에 번역한다.
-# 다만 무료(비공식) 엔드포인트는 동시 요청을 너무 때리면 레이트리밋을 거니 과하지 않게.
-TRANSLATE_WORKERS = 4
-TRANSLATE_MAX_RETRIES = 3
-TRANSLATE_RETRY_DELAY = 0.7   # 재시도마다 0.7s, 1.4s, 2.1s 로 점증
-
-# 원문 rect 높이가 이 값 이하면 '한 줄짜리'로 보고, 줄바꿈 없이 가로로 늘린다.
-SINGLE_LINE_MAX_H = 40
+TARGET_LANG = CONFIG.target_lang
+SCAN_INTERVAL_SEC = CONFIG.scan_interval_sec
+MIN_TEXT_LEN = CONFIG.min_text_len
+MAX_TEXT_LEN = CONFIG.max_text_len
+TRANSLATE_WORKERS = CONFIG.translate_workers
+TRANSLATE_MAX_RETRIES = CONFIG.translate_max_retries
+TRANSLATE_RETRY_DELAY = CONFIG.translate_retry_delay
+SINGLE_LINE_MAX_H = CONFIG.single_line_max_h
+FONT_SIZE = CONFIG.font_size
 
 # 고해상도(배율 조정된) 모니터에서 좌표가 어긋나지 않도록 DPI 인식을 켠다.
 try:
@@ -103,43 +102,8 @@ try:
 except Exception:
     pass
 
-# ── 본문이 아닌 것들을 걸러내는 규칙 ────────────────────
-# 타임스탬프(절대/상대), 편집 표시 등. 한 메시지 안에서 본문만 남기려고 쓴다.
-_TS_PATTERNS = [
-    re.compile(r"^\d{4}-\d{2}-\d{2}"),          # 2026-04-14 오전 7:21
-    re.compile(r"^\d{4}년"),                     # 2026년 4월 14일 ...
-    re.compile(r"^(오전|오후)\s*\d"),            # 오전 5:33
-    re.compile(r"^\d{1,2}:\d{2}"),               # 12:34
-    re.compile(r"^\d+\s*(초|분|시간|일|주|개월|달|년)\s*전$"),  # 3달 전
-    re.compile(r"^(어제|오늘)"),
-]
-_EDITED = {"수정됨", "(edited)", "edited"}
-
-
-def _classify_run(text: str) -> str:
-    """메시지 안의 Text 조각 하나를 분류한다."""
-    s = text.strip()
-    if not s:
-        return "empty"
-    if s in _EDITED:
-        return "edited"
-    if s.isdigit():                       # 반응 개수 등
-        return "count"
-    for p in _TS_PATTERNS:
-        if p.match(s):
-            return "timestamp"
-    if not any(ch.isalnum() for ch in s):  # 문장부호/이모지만 → 무의미
-        return "punct"
-    return "content"
-
 
 # ── 번역 ──────────────────────────────────────────────
-def _looks_like_korean(text: str) -> bool:
-    hangul = sum(1 for ch in text if "가" <= ch <= "힣")
-    letters = sum(1 for ch in text if ch.isalpha())
-    return letters > 0 and hangul / letters > 0.6
-
-
 # 요청 실패(네트워크/레이트리밋)를 '번역할 필요 없음(None)'과 구분하기 위한 표식.
 # 이 둘을 뭉뚱그리면 실패한 문장이 영구히 캐시돼서 다시는 번역되지 않는다.
 _FAILED = object()
@@ -259,15 +223,6 @@ def _rect_tuple(el) -> Optional[tuple[int, int, int, int]]:
         return None
 
 
-def _is_visible_rect(rect, win_rect) -> bool:
-    l, t, r, b = rect
-    if r <= l or b <= t:                     # 넓이 0 (렌더 안 됨)
-        return False
-    wl, wt, wr, wb = win_rect
-    # 창 영역과 겹치는지 (완전히 벗어난 스크롤 밖 메시지 제외)
-    return not (r < wl or l > wr or b < wt or t > wb)
-
-
 _find_win_logged = False
 # Discord 본체 창의 클래스. 우리 조작 창(Qt)이나 Discord 숨은 보조 창을 걸러낸다.
 _DISCORD_WIN_CLASS = "Chrome_WidgetWin_1"
@@ -340,42 +295,6 @@ def find_message_list(discord_win):
         if _has_message_items(lst):
             return lst
     return None
-
-
-# 같은 시각적 줄로 묶을 때 허용하는 세로 오차(px). 같은 줄 조각은 top이 거의
-# 같고(<5px), 다른 줄은 줄높이(~18px 이상)만큼 벌어진다.
-_LINE_Y_THRESHOLD = 14
-
-
-def _group_runs_into_lines(runs_data):
-    """(text, rect) 조각들을 화면 세로 위치(같은 줄)로 묶어 세그먼트 리스트로.
-
-    한 줄 안에서 멘션/코드/링크로 쪼개진 조각은 다시 이어붙여 문맥을 살린다.
-    각 세그먼트는 자기 줄의 rect만 차지하므로 오버레이가 줄 단위로 정확히 얹힌다.
-    """
-    runs_data.sort(key=lambda x: (x[1][1], x[1][0]))  # top, left 순
-    groups: list[dict] = []
-    for text, rect in runs_data:
-        top = rect[1]
-        if groups and abs(top - groups[-1]["top"]) <= _LINE_Y_THRESHOLD:
-            groups[-1]["parts"].append((rect[0], text))
-            groups[-1]["rects"].append(rect)
-        else:
-            groups.append({"top": top, "parts": [(rect[0], text)], "rects": [rect]})
-
-    segments = []
-    for g in groups:
-        g["parts"].sort(key=lambda x: x[0])           # 왼쪽→오른쪽
-        text = "".join(p[1] for p in g["parts"]).strip()
-        rects = g["rects"]
-        rect = (
-            min(r[0] for r in rects),
-            min(r[1] for r in rects),
-            max(r[2] for r in rects),
-            max(r[3] for r in rects),
-        )
-        segments.append((text, rect))
-    return segments
 
 
 def _extract_message_segments(item, win_rect):
@@ -585,7 +504,7 @@ class OverlayWindow(QWidget):
                 lbl = QLabel(translated, self)
                 lbl.setStyleSheet(
                     "background-color: rgba(30,30,30,255);"
-                    "color: white; font-size: 13px; padding: 1px 4px;"
+                    f"color: white; font-size: {FONT_SIZE}px; padding: 1px 4px;"
                     "border-radius: 3px;"
                 )
                 lbl.show()

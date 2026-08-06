@@ -1,0 +1,19 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # 순수 로직(text_filter, config)만 테스트하므로 Windows 전용 의존성
+      # (pywinauto/PyQt6) 없이 pytest만 설치하면 리눅스에서도 돈다.
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q

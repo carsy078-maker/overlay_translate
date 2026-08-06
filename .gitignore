@@ -16,3 +16,4 @@ dist/
 # 앱이 남기는 실행 로그
 translator.log
 _diag_uia.py
+.pytest_cache/
