@@ -54,6 +54,7 @@ from text_filter import (
     group_runs_into_lines as _group_runs_into_lines,
     is_visible_rect as _is_visible_rect,
     looks_like_korean as _looks_like_korean,
+    select_body_runs as _select_body_runs,
 )
 
 _LOG_PATH = os.path.join(app_dir(), "translator.log")
@@ -298,34 +299,33 @@ def find_message_list(discord_win):
 
 
 def _extract_message_segments(item, win_rect):
-    """메시지 ListItem 하나에서 (본문줄 텍스트, rect) 세그먼트 목록을 뽑는다."""
+    """메시지 ListItem 하나에서 (본문줄 텍스트, rect) 세그먼트 목록을 뽑는다.
+
+    유저명 처리가 핵심이다. 디스코드는 같은 사람이 연속으로 쓴 메시지를 '묶어서'
+    첫 메시지에만 [유저명][타임스탬프] 헤더를 붙이고, 나머지 묶인 메시지는 헤더가
+    없다. 그래서 '타임스탬프 뒤 = 본문'으로 단정하면, 헤더 없는 묶인 메시지(대화의
+    대부분)의 본문을 통째로 유저명으로 오인해 버린다.
+
+    해결: 타임스탬프 앞/뒤 본문을 나눠 담고,
+      - 타임스탬프가 있으면(헤더 메시지) 앞쪽(=유저명)은 버리고 뒤쪽만 본문으로,
+      - 타임스탬프가 없으면(묶인 메시지) 앞쪽이 곧 본문이므로 그대로 쓴다.
+    """
     try:
         runs = item.descendants(control_type="Text")
     except Exception:
         return []
 
-    seen_ts = False
-    collected: list[tuple[str, tuple[int, int, int, int]]] = []
-
+    raw = []
     for run in runs:
         try:
             t = run.window_text()
         except Exception:
             continue
-        kind = _classify_run(t)
-        if kind == "timestamp":
-            seen_ts = True
-            continue
-        if kind in ("empty", "edited", "count", "punct"):
-            continue
-        if not seen_ts:
-            # 타임스탬프보다 앞에 오는 본문류 = 보통 유저명 → 버린다
-            continue
-        r = _rect_tuple(run)
-        if not r or not _is_visible_rect(r, win_rect):
-            continue      # 화면에 렌더 안 된 조각은 위치를 못 잡으므로 제외
-        collected.append((t, r))
+        raw.append((t, _rect_tuple(run)))
 
+    # 본문만 추림(유저명/타임스탬프/묶인 메시지 처리) → 화면에 렌더된 조각만 남김
+    body = _select_body_runs(raw)
+    collected = [(t, r) for t, r in body if r and _is_visible_rect(r, win_rect)]
     if not collected:
         return []
 

@@ -62,6 +62,32 @@ def is_visible_rect(rect, win_rect) -> bool:
     return not (r < wl or l > wr or b < wt or t > wb)
 
 
+def select_body_runs(runs):
+    """트리 순서의 Text 조각들에서 '본문'만 골라 (text, rect)로 반환한다.
+
+    runs: [(text, rect), ...]  (rect는 None일 수 있음 — 좌표 가시성 필터는 호출측 몫)
+
+    유저명 처리가 핵심. 디스코드는 같은 사람이 연속으로 쓴 메시지를 '묶어서'
+    첫 메시지에만 [유저명][타임스탬프] 헤더를 붙이고, 묶인 나머지는 헤더가 없다.
+    따라서 '타임스탬프 뒤 = 본문'으로 단정하면 헤더 없는 묶인 메시지(대화의 대부분)의
+    본문을 통째로 유저명으로 오인해 버린다.
+
+      - 타임스탬프가 있으면(헤더 메시지): 앞쪽(=유저명)은 버리고 뒤쪽만 본문.
+      - 타임스탬프가 없으면(묶인 메시지): 앞쪽이 곧 본문이므로 그대로 사용.
+    """
+    pre, post = [], []
+    seen_ts = False
+    for text, rect in runs:
+        kind = classify_run(text)
+        if kind == "timestamp":
+            seen_ts = True
+            continue
+        if kind in ("empty", "edited", "count", "punct"):
+            continue
+        (post if seen_ts else pre).append((text, rect))
+    return post if seen_ts else pre
+
+
 def group_runs_into_lines(runs_data, y_threshold: int = LINE_Y_THRESHOLD):
     """(text, rect) 조각들을 화면 세로 위치(같은 줄)로 묶어 세그먼트 리스트로.
 

@@ -7,6 +7,7 @@ from text_filter import (
     group_runs_into_lines,
     is_visible_rect,
     looks_like_korean,
+    select_body_runs,
 )
 
 
@@ -117,3 +118,52 @@ def test_group_threshold_boundary():
     assert len(same) == 1
     diff = group_runs_into_lines([("a", (0, 0, 10, 10)), ("b", (20, 15, 30, 25))])
     assert len(diff) == 2
+
+
+# ── select_body_runs (핵심 회귀 방지) ─────────────────
+def _texts(runs):
+    return [t for t, _ in runs]
+
+
+def test_body_header_message_drops_username():
+    # 헤더 메시지: [유저명][타임스탬프][본문...] → 유저명 버리고 본문만
+    runs = [
+        ("Adjudicator", (0, 0, 80, 18)),        # 유저명 (타임스탬프 앞)
+        ("오전 6:08", (90, 0, 140, 18)),         # 타임스탬프
+        ("no problem c:", (0, 20, 120, 38)),     # 본문
+    ]
+    assert _texts(select_body_runs(runs)) == ["no problem c:"]
+
+
+def test_body_grouped_message_keeps_content():
+    # 묶인 메시지: 헤더(유저명/타임스탬프)가 아예 없음 → 본문을 버리면 안 된다.
+    # 이게 회귀했던 버그: seen_ts False라 전부 유저명으로 오인해 0개가 됐었다.
+    runs = [
+        ("u on global ", (0, 0, 90, 18)),
+        ("or garena ?", (92, 0, 170, 18)),
+    ]
+    assert _texts(select_body_runs(runs)) == ["u on global ", "or garena ?"]
+
+
+def test_body_drops_noise():
+    # 타임스탬프/편집표시/반응숫자/문장부호는 본문에서 제외
+    runs = [
+        ("오전 6:08", (0, 0, 50, 18)),
+        ("hello world", (0, 20, 100, 38)),
+        ("(", (0, 40, 5, 58)),
+        ("수정됨", (10, 40, 40, 58)),
+        (")", (45, 40, 50, 58)),
+        ("194", (0, 60, 30, 78)),
+    ]
+    assert _texts(select_body_runs(runs)) == ["hello world"]
+
+
+def test_body_empty():
+    assert select_body_runs([]) == []
+    # 헤더만 있고 본문이 없는 경우(유저명+타임스탬프뿐) → 빈 결과
+    assert select_body_runs([("User", (0, 0, 5, 5)), ("오전 6:08", (9, 0, 5, 5))]) == []
+
+
+def test_body_preserves_rect():
+    runs = [("오전 6:08", (0, 0, 50, 18)), ("hi there", (0, 20, 70, 38))]
+    assert select_body_runs(runs) == [("hi there", (0, 20, 70, 38))]
