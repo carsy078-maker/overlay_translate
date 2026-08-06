@@ -31,6 +31,9 @@ def app_dir() -> str:
 class Config:
     # 번역
     target_lang: str = "ko"           # 목표 언어 (ISO 코드: ko, en, ja ...)
+    translation_provider: str = "google"  # google | papago
+    papago_client_id: str = ""        # NCP Papago X-NCP-APIGW-API-KEY-ID
+    papago_client_secret: str = ""    # NCP Papago X-NCP-APIGW-API-KEY
     translate_workers: int = 4        # 동시 번역 워커 수 (많을수록 빠르나 레이트리밋↑)
     translate_max_retries: int = 3    # 번역 실패 시 재시도 횟수
     translate_retry_delay: float = 0.7  # 재시도 간격(초), 점증

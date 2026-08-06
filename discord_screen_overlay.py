@@ -88,6 +88,9 @@ DISCORD_TITLE_RE = ".*Discord.*"
 MESSAGE_AUTOMATION_PREFIX = "chat-messages-"
 
 TARGET_LANG = CONFIG.target_lang
+PROVIDER = CONFIG.translation_provider
+PAPAGO_ID = CONFIG.papago_client_id
+PAPAGO_SECRET = CONFIG.papago_client_secret
 SCAN_INTERVAL_SEC = CONFIG.scan_interval_sec
 MIN_TEXT_LEN = CONFIG.min_text_len
 MAX_TEXT_LEN = CONFIG.max_text_len
@@ -148,6 +151,65 @@ def _google_free_translate(text: str, session=None):
         return _FAILED          # 응답 형식이 깨짐 → 역시 재시도
 
 
+# ── Papago (네이버 클라우드 플랫폼) ─────────────────────
+# 구글 무료보다 한국어 구어체가 자연스럽다. NCP 콘솔에서 키 2개를 발급해야 한다.
+_PAPAGO_DETECT_URL = "https://naveropenapi.apigw.ntruss.com/langs/v1/dect"
+_PAPAGO_TRANS_URL = "https://naveropenapi.apigw.ntruss.com/nmt/v1/translation"
+
+
+def _papago_headers():
+    return {
+        "X-NCP-APIGW-API-KEY-ID": PAPAGO_ID,
+        "X-NCP-APIGW-API-KEY": PAPAGO_SECRET,
+    }
+
+
+def _papago_translate(text: str, session=None):
+    """NCP Papago. 반환: 번역문 / None(목표어와 같음·감지불가) / _FAILED(재시도).
+
+    Papago 번역 API는 source를 자동 감지하지 않으므로, 언어 감지(dect)를 먼저
+    호출해 원문 언어를 알아낸 뒤 번역한다.
+    """
+    http = session or requests
+    try:
+        d = http.post(_PAPAGO_DETECT_URL, headers=_papago_headers(),
+                      data={"query": text}, timeout=5)
+        d.raise_for_status()
+        src = (d.json() or {}).get("langCode")
+    except Exception:
+        return _FAILED
+    if not src or src in ("unk", TARGET_LANG):
+        return None                       # 감지 불가 또는 이미 목표 언어
+    try:
+        r = http.post(_PAPAGO_TRANS_URL, headers=_papago_headers(),
+                      data={"source": src, "target": TARGET_LANG, "text": text},
+                      timeout=5)
+        r.raise_for_status()
+        translated = r.json()["message"]["result"]["translatedText"].strip()
+        if not translated or translated == text.strip():
+            return None
+        return translated
+    except Exception:
+        return _FAILED
+
+
+# ── 프로바이더 디스패처 ─────────────────────────────────
+_PAPAGO_WARNED = False
+
+
+def _translate(text: str, session=None):
+    """설정된 프로바이더로 번역. 키가 없으면 구글 무료로 폴백."""
+    global _PAPAGO_WARNED
+    if PROVIDER == "papago":
+        if PAPAGO_ID and PAPAGO_SECRET:
+            return _papago_translate(text, session)
+        if not _PAPAGO_WARNED:
+            _PAPAGO_WARNED = True
+            _log("[translate] provider=papago 인데 키가 없음 → 구글 무료로 폴백. "
+                 "translator.ini 의 papago_client_id/secret 을 채우세요.")
+    return _google_free_translate(text, session)
+
+
 class TranslationManager:
     """번역 캐시 + 백그라운드 워커 풀.
 
@@ -187,7 +249,7 @@ class TranslationManager:
             if _looks_like_korean(text):
                 result = None
             else:
-                result = _google_free_translate(text, session)
+                result = _translate(text, session)
 
             if result is _FAILED:
                 # 실패는 캐시하지 않는다. 캐시해버리면 그 문장은 영원히 원문으로 남는다.

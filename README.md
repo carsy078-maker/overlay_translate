@@ -67,16 +67,36 @@ python discord_screen_overlay.py
 
 ```ini
 [translator]
-target_lang = ko          ; 목표 언어 (en, ja, zh-CN ...)
-translate_workers = 4     ; 동시 번역 워커 수
-scan_interval_sec = 0.35  ; 화면 스캔 주기
-font_size = 13            ; 번역 박스 글자 크기
+target_lang = ko             ; 목표 언어 (en, ja, zh-CN ...)
+translation_provider = google ; google(무료,키X) | papago(더 자연스러움)
+translate_workers = 4        ; 동시 번역 워커 수
+scan_interval_sec = 0.35     ; 화면 스캔 주기
+font_size = 13               ; 번역 박스 글자 크기
 ```
 
 ```bash
 # 일회성으로 영어 번역
 DTL_TARGET_LANG=en python discord_screen_overlay.py
 ```
+
+### 번역 엔진
+
+기본은 **구글 무료**(비공식 엔드포인트, 키 불필요)다. 순수 기계번역이라 슬랭·
+구어체가 어색할 수 있다. 더 자연스러운 한국어를 원하면 **Papago**로 바꾼다.
+
+Papago는 네이버 클라우드 플랫폼(NCP) 키가 필요하다:
+1. [NCP 콘솔](https://console.ncloud.com)에서 **Papago Translation** 이용 신청
+2. **Application 등록** 후 `Client ID` / `Client Secret` 발급
+3. `translator.ini`에 입력하고 provider를 바꾼다:
+
+```ini
+[translator]
+translation_provider = papago
+papago_client_id = 발급받은_ID
+papago_client_secret = 발급받은_SECRET
+```
+
+키가 없거나 provider가 papago가 아니면 자동으로 구글 무료로 동작한다.
 
 ### 개발 / 테스트
 
