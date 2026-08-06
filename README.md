@@ -9,6 +9,11 @@
 Vencord 같은 DOM 주입 방식과 달리 디스코드 프로세스를 건드리지 않는다. 화면
 좌표를 OS 표준 API로 직접 읽어서, 그 좌표에 불투명 라벨을 그리는 방식이다.
 
+![데모: 영어 대화 채널의 각 메시지 위에 한국어 번역이 얹힌 모습](assets/demo.png)
+
+> 실제 영어 대화 채널에서, 사용자가 쓴 각 메시지 위에 한국어 번역이 줄 단위로
+> 얹힌다. 이미 한국어인 메시지는 그대로 둔다. (공개 채널 샘플 화면)
+
 - **아키텍처**: [docs/architecture.md](docs/architecture.md) (스레드 구성 다이어그램)
 - **실측 근거**: [results/scan_benchmark.md](results/scan_benchmark.md)
 
