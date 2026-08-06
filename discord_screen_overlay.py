@@ -91,6 +91,8 @@ TARGET_LANG = CONFIG.target_lang
 PROVIDER = CONFIG.translation_provider
 GEMINI_API_KEY = CONFIG.gemini_api_key
 GEMINI_MODEL = CONFIG.gemini_model
+PROXY_URL = CONFIG.proxy_url
+PROXY_TOKEN = CONFIG.proxy_token
 SCAN_INTERVAL_SEC = CONFIG.scan_interval_sec
 MIN_TEXT_LEN = CONFIG.min_text_len
 MAX_TEXT_LEN = CONFIG.max_text_len
@@ -188,14 +190,44 @@ def _gemini_translate(text: str, session=None):
         return _FAILED
 
 
+# ── Proxy (배포용: 키를 서버에 숨김) ───────────────────
+# exe엔 키가 안 들어가고, 우리가 띄운 프록시 서버가 키를 쥐고 Gemini로 대신 호출.
+def _proxy_translate(text: str, session=None):
+    """프록시 서버로 번역 위임. 반환: 번역문 / None / _FAILED(재시도)."""
+    http = session or requests
+    headers = {}
+    if PROXY_TOKEN:
+        headers["X-Proxy-Token"] = PROXY_TOKEN
+    try:
+        res = http.post(PROXY_URL, headers=headers,
+                        json={"text": text, "target": TARGET_LANG}, timeout=10)
+        if res.status_code == 429:
+            return _FAILED                 # 서버측 레이트리밋 → 재시도
+        res.raise_for_status()
+        data = res.json()
+    except Exception:
+        return _FAILED
+    out = (data.get("translated") or "").strip()
+    if not out or out == text.strip():
+        return None
+    return out
+
+
 # ── 프로바이더 디스패처 ─────────────────────────────────
 _GEMINI_WARNED = False
+_PROXY_WARNED = False
 
 
 def _translate(text: str, session=None):
-    """설정된 프로바이더로 번역. 키가 없으면 구글 무료로 폴백."""
-    global _GEMINI_WARNED
-    if PROVIDER == "gemini":
+    """설정된 프로바이더로 번역. 키/주소가 없으면 구글 무료로 폴백."""
+    global _GEMINI_WARNED, _PROXY_WARNED
+    if PROVIDER == "proxy":
+        if PROXY_URL:
+            return _proxy_translate(text, session)
+        if not _PROXY_WARNED:
+            _PROXY_WARNED = True
+            _log("[translate] provider=proxy 인데 proxy_url 이 없음 → 구글 무료로 폴백.")
+    elif PROVIDER == "gemini":
         if GEMINI_API_KEY:
             return _gemini_translate(text, session)
         if not _GEMINI_WARNED:

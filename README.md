@@ -100,6 +100,29 @@ gemini_api_key = 발급받은_키
 티어에는 분당 요청 한도가 있어, 많은 메시지를 한꺼번에 번역하면 잠시 지연될 수
 있다(재시도로 자동 처리).
 
+### 남에게 배포하기 (내 키 숨김)
+
+exe에 키를 심으면 뜯어서 추출된다(원리적 한계). 그래서 배포 시엔 키를 **프록시
+서버**에만 두고 exe는 그 주소만 호출하게 한다 — exe엔 키가 없다.
+
+Cloudflare Workers(무료)로 5분이면 띄운다. 배포 가이드와 코드는
+[proxy/](proxy/) 폴더 참고. 요약:
+
+1. `proxy/worker.js`를 Cloudflare Worker로 배포하고 `GEMINI_API_KEY`를 서버 비밀로 등록
+2. `translator.ini`에 provider를 proxy로:
+
+```ini
+[translator]
+translation_provider = proxy
+proxy_url = https://<이름>.<계정>.workers.dev
+proxy_token = <남용방지 토큰>
+```
+
+3. exe를 빌드해 배포. 받는 사람은 키 없이 실행만 하면 된다.
+
+> 단, 모든 사용자의 번역이 내 키 하나로 나가므로 무료 한도를 공유한다. 불특정
+> 다수 배포라면 각자 키(gemini) 방식이 낫다.
+
 ### 개발 / 테스트
 
 핵심 로직(`text_filter`, `config`)은 PyQt6/pywinauto 없이 테스트된다.
