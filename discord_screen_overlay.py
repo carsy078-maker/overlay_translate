@@ -104,6 +104,7 @@ TRANSLATE_RETRY_DELAY = CONFIG.translate_retry_delay
 # 적어서, 한 화면(십수 개)을 개별 호출하면 대부분 429로 막힌다. 묶어 보내면
 # 화면당 1~2요청으로 줄어 한도에 안 걸린다.
 TRANSLATE_BATCH_MAX = 20
+FAIL_COOLDOWN = 20            # 일시 실패(429 등) 후 재시도까지 대기(초)
 SINGLE_LINE_MAX_H = CONFIG.single_line_max_h
 FONT_SIZE = CONFIG.font_size
 
@@ -245,8 +246,9 @@ def _translate(text: str, session=None):
 # ── 배치 번역 (LLM 무료 티어 RPM 회피) ──────────────────
 _BATCH_PROMPT = (
     "아래 번호 매겨진 메시지들을 각각 자연스러운 {target} 구어체로 번역해. "
-    "게임 용어·슬랭·줄임말은 맥락에 맞게. 반드시 '번호. 번역문' 형식으로, 입력과 "
-    "같은 개수/번호만 출력해. 설명 금지. 이미 {target}이면 그대로.\n\n{body}"
+    "게임 용어·슬랭·줄임말은 맥락에 맞게. 반드시 {target} 한 가지 언어로만 출력하고 "
+    "다른 언어의 문자(한자·히라가나·키릴 등)를 절대 섞지 마. 반드시 '번호. 번역문' "
+    "형식으로, 입력과 같은 개수/번호만 출력해. 설명 금지. 이미 {target}이면 그대로.\n\n{body}"
 )
 
 
@@ -323,6 +325,7 @@ class TranslationManager:
     def __init__(self, num_workers: int = TRANSLATE_WORKERS):
         self._cache: dict[str, Optional[str]] = {}
         self._pending: set[str] = set()
+        self._retry_after: dict[str, float] = {}   # 일시 실패(429 등) 재시도 예약 시각
         self._queue: "Queue[tuple]" = Queue()
         self._lock = threading.Lock()
         for _ in range(max(1, num_workers)):
@@ -332,6 +335,11 @@ class TranslationManager:
         with self._lock:
             if text in self._cache:
                 return self._cache[text]
+            ra = self._retry_after.get(text)
+            if ra is not None:
+                if time.time() < ra:
+                    return None                    # 쿨다운 중 — 아직 재요청 안 함
+                del self._retry_after[text]        # 쿨다운 끝 → 다시 시도 허용
             if text not in self._pending:
                 self._pending.add(text)
                 self._queue.put((text, 0))
@@ -369,9 +377,10 @@ class TranslationManager:
                         if attempt < TRANSLATE_MAX_RETRIES:
                             requeue.append((text, attempt + 1))
                         else:
-                            _log(f"[translate] 포기(재시도 {attempt}회 실패): "
-                                 f"{text[:40]!r}")
-                            self._cache[text] = None
+                            # 일시 실패(429/네트워크)는 영구 캐시하지 않는다. 쿨다운 뒤
+                            # 다시 시도하도록 예약 → 한도가 회복되면 자동으로 재번역.
+                            _log(f"[translate] 재시도 예약(일시 실패): {text[:40]!r}")
+                            self._retry_after[text] = time.time() + FAIL_COOLDOWN
                             self._pending.discard(text)
                     else:
                         self._cache[text] = res

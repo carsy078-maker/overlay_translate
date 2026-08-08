@@ -84,23 +84,27 @@ DTL_TARGET_LANG=en python discord_screen_overlay.py
 ### 번역 엔진
 
 기본은 **구글 무료**(비공식 엔드포인트, 키 불필요)다. 순수 기계번역이라 슬랭·
-구어체가 어색할 수 있다. 더 자연스러운 한국어를 원하면 **Gemini**(LLM)로 바꾼다.
-문맥·슬랭·말투를 반영해 훨씬 자연스럽다.
+구어체가 어색할 수 있다. 더 자연스러운 한국어를 원하면 **LLM**을 쓴다:
 
-Gemini 무료 키는 **신용카드 없이** 발급된다:
-1. [Google AI Studio](https://aistudio.google.com)에서 구글 계정으로 로그인
-2. **Get API key** → 키 발급 (무료 티어, 카드 불필요)
-3. `translator.ini`에 입력하고 provider를 바꾼다:
+- **gemini** — Google AI Studio 키(카드 불필요). 무료 티어 한도가 빡빡해 한 화면씩
+  번역하면 429가 잦다.
+- **proxy** — 우리가 띄운 프록시 서버가 대신 LLM을 호출(키를 서버에 숨김). 배포용.
+  프록시 뒤에는 **Groq**(Llama 3.3 70B, 무료·카드불필요·한도 넉넉·빠름)를 두는 걸
+  권장한다. 자연스러운 품질에 한도 여유가 커서 실시간에 적합.
+
+한 화면의 여러 메시지는 **한 요청으로 묶어(batch)** 번역해 무료 한도를 아낀다.
+
+프록시 설정과 Groq/Gemini 연결은 [proxy/](proxy/) 참고. 요약:
 
 ```ini
 [translator]
-translation_provider = gemini
-gemini_api_key = 발급받은_키
+translation_provider = proxy
+proxy_url = https://<이름>.<계정>.workers.dev
+proxy_token = <남용방지 토큰>
 ```
 
-키가 없거나 provider가 gemini가 아니면 자동으로 구글 무료로 동작한다. 무료
-티어에는 분당 요청 한도가 있어, 많은 메시지를 한꺼번에 번역하면 잠시 지연될 수
-있다(재시도로 자동 처리).
+키/주소가 없으면 자동으로 구글 무료로 폴백한다. 일시 실패(429 등)는 잠시 뒤
+자동 재시도한다.
 
 ### 남에게 배포하기 (내 키 숨김)
 
