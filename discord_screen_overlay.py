@@ -54,6 +54,7 @@ from text_filter import (
     group_runs_into_lines as _group_runs_into_lines,
     is_visible_rect as _is_visible_rect,
     looks_like_korean as _looks_like_korean,
+    parse_numbered_lines as _parse_numbered_lines,
     select_body_runs as _select_body_runs,
 )
 
@@ -99,6 +100,10 @@ MAX_TEXT_LEN = CONFIG.max_text_len
 TRANSLATE_WORKERS = CONFIG.translate_workers
 TRANSLATE_MAX_RETRIES = CONFIG.translate_max_retries
 TRANSLATE_RETRY_DELAY = CONFIG.translate_retry_delay
+# 한 요청에 최대 몇 문장을 묶을지. LLM(proxy/gemini)은 무료 티어 분당 요청수가
+# 적어서, 한 화면(십수 개)을 개별 호출하면 대부분 429로 막힌다. 묶어 보내면
+# 화면당 1~2요청으로 줄어 한도에 안 걸린다.
+TRANSLATE_BATCH_MAX = 20
 SINGLE_LINE_MAX_H = CONFIG.single_line_max_h
 FONT_SIZE = CONFIG.font_size
 
@@ -237,23 +242,90 @@ def _translate(text: str, session=None):
     return _google_free_translate(text, session)
 
 
+# ── 배치 번역 (LLM 무료 티어 RPM 회피) ──────────────────
+_BATCH_PROMPT = (
+    "아래 번호 매겨진 메시지들을 각각 자연스러운 {target} 구어체로 번역해. "
+    "게임 용어·슬랭·줄임말은 맥락에 맞게. 반드시 '번호. 번역문' 형식으로, 입력과 "
+    "같은 개수/번호만 출력해. 설명 금지. 이미 {target}이면 그대로.\n\n{body}"
+)
+
+
+def _finalize_batch(texts, parsed):
+    """파싱된 번역 리스트를 원문과 비교해 정리(빈 값/동일 → None)."""
+    out = []
+    for src, tr in zip(texts, parsed):
+        tr = (tr or "").strip()
+        out.append(None if (not tr or tr == src.strip()) else tr)
+    return out
+
+
+def _proxy_translate_batch(texts, session=None):
+    """여러 문장을 프록시 한 번으로 번역. texts와 같은 길이 리스트(번역문/None/_FAILED)."""
+    http = session or requests
+    headers = {}
+    if PROXY_TOKEN:
+        headers["X-Proxy-Token"] = PROXY_TOKEN
+    try:
+        res = http.post(PROXY_URL, headers=headers,
+                        json={"texts": texts, "target": TARGET_LANG}, timeout=20)
+        if res.status_code == 429:
+            return [_FAILED] * len(texts)
+        res.raise_for_status()
+        arr = res.json().get("translations")
+    except Exception:
+        return [_FAILED] * len(texts)
+    if not isinstance(arr, list) or len(arr) != len(texts):
+        return [_FAILED] * len(texts)
+    return _finalize_batch(texts, arr)
+
+
+def _gemini_translate_batch(texts, session=None):
+    """여러 문장을 Gemini 한 번으로 번역(번호 목록 프롬프트)."""
+    http = session or requests
+    body = "\n".join(f"{i+1}. {t.replace(chr(10), ' ')}" for i, t in enumerate(texts))
+    prompt = _BATCH_PROMPT.format(target=TARGET_LANG, body=body)
+    try:
+        res = http.post(_GEMINI_URL.format(model=GEMINI_MODEL),
+                        params={"key": GEMINI_API_KEY},
+                        json={"contents": [{"parts": [{"text": prompt}]}],
+                              "generationConfig": {"temperature": 0.3}},
+                        timeout=20)
+        if res.status_code == 429:
+            return [_FAILED] * len(texts)
+        res.raise_for_status()
+        out = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception:
+        return [_FAILED] * len(texts)
+    return _finalize_batch(texts, _parse_numbered_lines(out, len(texts)))
+
+
+def _translate_batch(texts, session=None):
+    """설정된 프로바이더로 여러 문장을 한 번에 번역."""
+    if PROVIDER == "proxy" and PROXY_URL:
+        return _proxy_translate_batch(texts, session)
+    if PROVIDER == "gemini" and GEMINI_API_KEY:
+        return _gemini_translate_batch(texts, session)
+    # 구글 무료는 배치 API가 없고 RPM 여유가 있어 개별 번역.
+    return [_translate(t, session) for t in texts]
+
+
 class TranslationManager:
     """번역 캐시 + 백그라운드 워커 풀.
 
     get(text): 캐시에 있으면 즉시 반환(번역문 or None), 없으면 큐에 넣고 None.
     None은 '아직 없음 / 한국어 / 실패' 모두를 뜻한다. 워커가 채우면 다음 프레임에 뜬다.
 
-    줄 단위로 쪼개면 한 화면에 번역할 문장이 10개 넘게 나온다. 워커가 하나면
-    HTTP 왕복을 줄줄이 기다려서 체감 딜레이가 커지므로, 워커를 여러 개 두고
-    동시에 처리한다. 각 워커는 Session을 재사용해 커넥션도 아낀다.
+    한 화면에 번역할 문장이 십수 개 나오는데, LLM 무료 티어는 분당 요청 수가
+    적다. 그래서 워커가 큐를 '한 번에 여러 개' 꺼내(batch) 한 요청으로 묶어
+    번역한다 → 화면당 요청이 1~2개로 줄어 429(레이트리밋)를 피한다.
     """
 
     def __init__(self, num_workers: int = TRANSLATE_WORKERS):
         self._cache: dict[str, Optional[str]] = {}
         self._pending: set[str] = set()
-        self._queue: "Queue[str]" = Queue()
+        self._queue: "Queue[tuple]" = Queue()
         self._lock = threading.Lock()
-        for _ in range(num_workers):
+        for _ in range(max(1, num_workers)):
             threading.Thread(target=self._worker, daemon=True).start()
 
     def get(self, text: str) -> Optional[str]:
@@ -269,27 +341,46 @@ class TranslationManager:
         session = requests.Session()
         while True:
             try:
-                text, attempt = self._queue.get(timeout=1)
+                first = self._queue.get(timeout=1)
             except Empty:
                 continue
+            # 큐에 쌓인 것을 최대 BATCH_MAX개까지 한꺼번에 꺼낸다.
+            batch = [first]
+            while len(batch) < TRANSLATE_BATCH_MAX:
+                try:
+                    batch.append(self._queue.get_nowait())
+                except Empty:
+                    break
 
-            if _looks_like_korean(text):
-                result = None
-            else:
-                result = _translate(text, session)
+            # 한국어는 API를 안 부르고 바로 None. 나머지만 배치 번역.
+            results = [None] * len(batch)
+            todo = [(i, t) for i, (t, _a) in enumerate(batch)
+                    if not _looks_like_korean(t)]
+            if todo:
+                trs = _translate_batch([t for _i, t in todo], session)
+                for (i, _t), tr in zip(todo, trs):
+                    results[i] = tr
 
-            if result is _FAILED:
-                # 실패는 캐시하지 않는다. 캐시해버리면 그 문장은 영원히 원문으로 남는다.
-                if attempt < TRANSLATE_MAX_RETRIES:
-                    time.sleep(TRANSLATE_RETRY_DELAY * (attempt + 1))  # 점증 backoff
-                    self._queue.put((text, attempt + 1))
-                    continue                       # _pending 유지 → 중복 큐잉 방지
-                _log(f"[translate] 포기(재시도 {attempt}회 실패): {text[:40]!r}")
-                result = None
-
+            requeue = []
             with self._lock:
-                self._cache[text] = result
-                self._pending.discard(text)
+                for (text, attempt), res in zip(batch, results):
+                    if res is _FAILED:
+                        # 실패는 캐시하지 않는다(영구 원문 방지). 재시도 대상으로.
+                        if attempt < TRANSLATE_MAX_RETRIES:
+                            requeue.append((text, attempt + 1))
+                        else:
+                            _log(f"[translate] 포기(재시도 {attempt}회 실패): "
+                                 f"{text[:40]!r}")
+                            self._cache[text] = None
+                            self._pending.discard(text)
+                    else:
+                        self._cache[text] = res
+                        self._pending.discard(text)
+
+            if requeue:
+                time.sleep(TRANSLATE_RETRY_DELAY)   # 잠깐 쉬고 통째로 재시도
+                for item in requeue:
+                    self._queue.put(item)
 
 
 # ── 스캔 (메시지 목록만) ────────────────────────────────

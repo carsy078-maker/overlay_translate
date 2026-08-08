@@ -93,6 +93,25 @@ def is_visible_rect(rect, win_rect) -> bool:
     return not (r < wl or l > wr or b < wt or t > wb)
 
 
+def parse_numbered_lines(text: str, n: int):
+    """'1. 번역문' 형식의 배치 응답을 길이 n 리스트로 파싱한다.
+
+    LLM에게 여러 문장을 번호 매겨 한 번에 번역시킨 뒤 그 응답을 원래 순서로
+    되돌리는 데 쓴다. 번호를 못 찾은 자리는 빈 문자열.
+    """
+    result = [""] * n
+    for line in text.splitlines():
+        line = line.strip()
+        i = 0
+        while i < len(line) and line[i].isdigit():
+            i += 1
+        if i > 0 and i < len(line) and line[i] in ".)":
+            num = int(line[:i]) - 1
+            if 0 <= num < n:
+                result[num] = line[i + 1:].strip()
+    return result
+
+
 def select_body_runs(runs):
     """트리 순서의 Text 조각들에서 '본문'만 골라 (text, rect)로 반환한다.
 

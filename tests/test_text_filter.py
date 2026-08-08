@@ -7,9 +7,27 @@ from text_filter import (
     group_runs_into_lines,
     is_visible_rect,
     looks_like_korean,
+    parse_numbered_lines,
     select_body_runs,
     strip_ui_noise,
 )
+
+
+# ── parse_numbered_lines (배치 응답 파싱) ─────────────
+def test_parse_numbered_basic():
+    out = "1. 안녕\n2. 반가워\n3. 잘가"
+    assert parse_numbered_lines(out, 3) == ["안녕", "반가워", "잘가"]
+
+
+def test_parse_numbered_paren_and_gaps():
+    # 괄호 번호 형식 + 일부 누락 → 누락 자리는 빈 문자열
+    out = "1) 하나\n\n3. 셋"
+    assert parse_numbered_lines(out, 3) == ["하나", "", "셋"]
+
+
+def test_parse_numbered_out_of_range_ignored():
+    out = "1. a\n5. b"          # 5는 범위 밖 → 무시
+    assert parse_numbered_lines(out, 2) == ["a", ""]
 
 
 # ── classify_run ──────────────────────────────────────

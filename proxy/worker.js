@@ -43,17 +43,28 @@ export default {
     } catch {
       return json({ error: "bad json" }, 400);
     }
-    const text = (body.text || "").toString().slice(0, 2000);
     const target = (body.target || "ko").toString();
-    if (!text.trim()) return json({ error: "no text" }, 400);
+
+    // 배치: texts 배열이면 여러 개를 한 요청으로(무료 티어 RPM 절약).
+    const texts = Array.isArray(body.texts)
+      ? body.texts.map((t) =>
+          (t || "").toString().replace(/\n/g, " ").slice(0, 2000))
+      : null;
+    const single = texts ? null : (body.text || "").toString().slice(0, 2000);
+    if (!texts && !single.trim()) return json({ error: "no text" }, 400);
+    if (texts && texts.length === 0) return json({ translations: [] });
 
     // 시크릿에 붙여넣을 때 딸려온 공백/줄바꿈 제거(400의 흔한 원인).
     const apiKey = (env.GEMINI_API_KEY || "").trim();
     const model = (env.GEMINI_MODEL || "gemini-flash-latest").trim();
-    const prompt =
-      `다음은 디스코드 채팅 메시지야. 자연스러운 ${target} 구어체로 번역해줘. ` +
-      `게임 용어·슬랭·줄임말은 맥락에 맞게 자연스럽게 옮기고, 설명이나 따옴표 없이 ` +
-      `번역문만 한 줄로 출력해. 이미 ${target}이면 그대로 출력해.\n\n메시지: ${text}`;
+    const prompt = texts
+      ? `아래 번호 매겨진 메시지들을 각각 자연스러운 ${target} 구어체로 번역해. ` +
+        `게임 용어·슬랭·줄임말은 맥락에 맞게. 반드시 "번호. 번역문" 형식으로, ` +
+        `입력과 같은 개수/번호만 출력해. 설명 금지. 이미 ${target}이면 그대로.\n\n` +
+        texts.map((t, i) => `${i + 1}. ${t}`).join("\n")
+      : `다음은 디스코드 채팅 메시지야. 자연스러운 ${target} 구어체로 번역해줘. ` +
+        `게임 용어·슬랭·줄임말은 맥락에 맞게 자연스럽게 옮기고, 설명이나 따옴표 없이 ` +
+        `번역문만 한 줄로 출력해. 이미 ${target}이면 그대로 출력해.\n\n메시지: ${single}`;
 
     const url =
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent` +
@@ -90,6 +101,17 @@ export default {
       out = (data.candidates[0].content.parts[0].text || "").trim();
     } catch {
       out = "";
+    }
+
+    if (texts) {
+      // "1. 번역\n2. 번역" 응답을 입력 순서대로 되돌린다.
+      const map = {};
+      for (const line of out.split("\n")) {
+        const m = line.trim().match(/^(\d+)[.)]\s*(.*)$/);
+        if (m) map[+m[1] - 1] = m[2].trim();
+      }
+      const translations = texts.map((_t, i) => map[i] || "");
+      return json({ translations });
     }
     return json({ translated: out });
   },
