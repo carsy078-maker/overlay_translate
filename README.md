@@ -63,6 +63,8 @@ python discord_screen_overlay.py
 ## 설정
 
 실행 옵션은 코드가 아니라 exe 옆의 `translator.ini`로 바꾼다(없으면 기본값).
+`translator.ini.example`을 `translator.ini`로 복사해서 값을 채운다. 실제
+`translator.ini`는 키·토큰이 들어갈 수 있어 `.gitignore`로 커밋되지 않는다.
 일회성 변경은 환경변수가 편하다. 우선순위는 **환경변수 > ini > 기본값**.
 
 ```ini

@@ -15,6 +15,17 @@
 
 export default {
   async fetch(request, env) {
+    // 점검용: GET 으로 열면 시크릿이 바인딩됐는지(값은 노출 안 하고 존재/길이만) 확인.
+    if (request.method === "GET") {
+      const k = (env.GEMINI_API_KEY || "").trim();
+      return json({
+        ok: true,
+        hasKey: !!k,
+        keyLen: k.length,
+        hasToken: !!(env.PROXY_TOKEN || "").trim(),
+        model: (env.GEMINI_MODEL || "gemini-flash-latest").trim(),
+      });
+    }
     if (request.method !== "POST") {
       return json({ error: "POST only" }, 405);
     }
@@ -36,7 +47,9 @@ export default {
     const target = (body.target || "ko").toString();
     if (!text.trim()) return json({ error: "no text" }, 400);
 
-    const model = env.GEMINI_MODEL || "gemini-flash-latest";
+    // 시크릿에 붙여넣을 때 딸려온 공백/줄바꿈 제거(400의 흔한 원인).
+    const apiKey = (env.GEMINI_API_KEY || "").trim();
+    const model = (env.GEMINI_MODEL || "gemini-flash-latest").trim();
     const prompt =
       `다음은 디스코드 채팅 메시지야. 자연스러운 ${target} 구어체로 번역해줘. ` +
       `게임 용어·슬랭·줄임말은 맥락에 맞게 자연스럽게 옮기고, 설명이나 따옴표 없이 ` +
@@ -44,7 +57,7 @@ export default {
 
     const url =
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent` +
-      `?key=${env.GEMINI_API_KEY}`;
+      `?key=${encodeURIComponent(apiKey)}`;
 
     let r;
     try {
@@ -61,8 +74,14 @@ export default {
     }
 
     if (!r.ok) {
-      // 429는 그대로 전달해 클라이언트가 재시도하도록.
-      return json({ error: "upstream " + r.status }, r.status === 429 ? 429 : 502);
+      // 429는 그대로 전달해 클라이언트가 재시도하도록. 그 외 오류는 원인 파악을
+      // 위해 업스트림 메시지를 함께 반환한다(키 값 자체는 노출하지 않는다).
+      let detail = "";
+      try {
+        detail = (await r.text()).slice(0, 300);
+      } catch {}
+      return json({ error: "upstream " + r.status, detail },
+                  r.status === 429 ? 429 : 502);
     }
 
     let out = "";

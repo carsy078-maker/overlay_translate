@@ -17,3 +17,6 @@ dist/
 translator.log
 _diag_uia.py
 .pytest_cache/
+
+# 실제 설정(키/토큰 포함) — 커밋 금지. translator.ini.example 참고
+translator.ini
