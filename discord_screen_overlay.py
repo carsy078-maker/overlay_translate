@@ -526,6 +526,25 @@ def _extract_message_segments(item, win_rect):
     ]
 
 
+def _viewport_rect(msg_list, win_rect):
+    """메시지가 실제로 보이는 영역(채널 헤더 아래 ~ 입력창 위).
+
+    메시지 List 자체의 rect는 스크롤된 위/아래 콘텐츠까지 포함(뷰포트가 아님)이라,
+    그걸로 가시성을 판정하면 헤더 뒤로 스크롤된 메시지까지 번역돼 헤더 위에 박스가
+    뜬다. List의 부모 컨테이너가 실제 스크롤 뷰포트라 그 rect를 창과 교집합해 쓴다.
+    못 구하면 창 전체로 폴백.
+    """
+    try:
+        pr = _rect_tuple(msg_list.parent())
+    except Exception:
+        pr = None
+    if not pr:
+        return win_rect
+    l, t = max(pr[0], win_rect[0]), max(pr[1], win_rect[1])
+    r, b = min(pr[2], win_rect[2]), min(pr[3], win_rect[3])
+    return (l, t, r, b) if (r > l and b > t) else win_rect
+
+
 class Scanner(QObject):
     blocksReady = pyqtSignal(list)          # list[(MessageBlock, translated)]
     windowRectReady = pyqtSignal(tuple)
@@ -596,6 +615,10 @@ class Scanner(QObject):
                 continue
             self._log_state("정상 스캔 중")
 
+            # 실제로 보이는 메시지 영역(헤더 아래~입력창 위). 창 전체가 아니라 이걸로
+            # 가시성을 판정해야 스크롤로 가려진 메시지가 헤더 위에 안 뜬다.
+            clip = _viewport_rect(msg_list, win_rect)
+
             t0 = time.perf_counter()
             try:
                 items = msg_list.children(control_type="ListItem")
@@ -614,10 +637,10 @@ class Scanner(QObject):
                 if not auto.startswith(MESSAGE_AUTOMATION_PREFIX):
                     continue
                 item_rect = _rect_tuple(item)
-                if item_rect is None or not _is_visible_rect(item_rect, win_rect):
+                if item_rect is None or not _is_visible_rect(item_rect, clip):
                     continue
                 scanned += 1
-                segments = _extract_message_segments(item, win_rect)
+                segments = _extract_message_segments(item, clip)
                 for i, (text, rect) in enumerate(segments):
                     translated = self._translator.get(text)
                     if translated:
